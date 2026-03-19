@@ -10,11 +10,17 @@
             --env-light: #8b252e;
             --gold: #d4af37;
         }
-        
+
+        * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
         body, html {
             margin: 0; padding: 0; width: 100%; height: 100%;
             display: flex; flex-direction: column; align-items: center;
             background-color: #e8e2db; overflow: hidden; font-family: sans-serif;
+            touch-action: none;
         }
 
         .page-title {
@@ -22,20 +28,18 @@
             color: #4a3728; letter-spacing: 5px; z-index: 10;
         }
 
-        /* 互動舞台：下調位置防止切頂 */
+        /* 互動舞台：維持你提供的原始設定 */
         .stage {
             position: relative; width: 340px; height: 220px;
             margin-top: 220px; display: flex; justify-content: center;
         }
 
-        /* 顆粒材質層：利用 SVG 噪點模擬皮革顆粒 */
         .leather-texture {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             pointer-events: none; opacity: 0.25; z-index: 5;
             background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
         }
 
-        /* 信封口袋 */
         .env-body {
             position: absolute; bottom: 0; width: 340px; height: 220px;
             background: var(--env-color); border-radius: 0 0 5px 5px; z-index: 30;
@@ -47,7 +51,7 @@
         .brand { color: var(--gold); font-weight: bold; font-size: 18px; letter-spacing: 2px; margin-top: 95px; z-index: 31; }
         .from { color: var(--gold); font-size: 12px; position: absolute; bottom: 15px; font-weight: bold; z-index: 31; }
 
-        /* 三角形蓋子 */
+        /* === 核心：完全保留你提供的正確定位三角形 === */
         .flap {
             position: absolute; top: 0; left: 0; width: 0; height: 0;
             border-left: 170px solid transparent; border-right: 170px solid transparent;
@@ -57,36 +61,36 @@
             cursor: pointer;
         }
 
-        /* 卡片圖片 */
         #card {
             position: absolute; top: 10px; left: 15px; width: 310px; height: auto;
             border-radius: 2px; box-shadow: 0 5px 15px rgba(0,0,0,0.2);
             z-index: 20; opacity: 0;
-            transition: all 0.8s cubic-bezier(0.19, 1, 0.22, 1);
-            cursor: pointer;
+            transform: translateY(0);
+            transition: opacity 0.5s ease;
+            cursor: grab; touch-action: none;
         }
 
-        /* 狀態動畫 */
         .is-open .flap { transform: rotateX(180deg); z-index: 5; }
-        .is-open #card { opacity: 1; transform: translateY(-40px); }
+        .is-open #card { opacity: 1; }
 
-        /* 滑出位置：精確校對，絕對不切頂 */
-        .is-pulled #card { transform: translateY(-240px); z-index: 100; }
+        #card.dragging { transition: none !important; }
 
-        /* 放大：強制全螢幕置中 */
+        /* 放大置中效果 */
         #card.is-maximized {
             position: fixed !important; top: 50% !important; left: 50% !important;
-            transform: translate(-50%, -50%) scale(1.65) !important;
-            z-index: 2000 !important; box-shadow: 0 0 150px rgba(0,0,0,0.7);
+            width: min(92vw, 420px) !important;
+            transform: translate(-50%, -50%) !important;
+            z-index: 2000 !important; box-shadow: 0 0 100px rgba(0,0,0,0.6);
+            border-radius: 8px; cursor: pointer;
         }
 
-        /* 背景變暗 */
         .overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.85); opacity: 0; pointer-events: none;
-            transition: 0.4s; z-index: 1500;
+            position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+            opacity: 0; pointer-events: none; transition: 0.35s; z-index: 1500;
         }
         body.max-mode .overlay { opacity: 1; pointer-events: auto; }
+
+        .hint { margin-top: 16px; color: #6e6257; font-size: 13px; }
     </style>
 </head>
 <body id="mainBody">
@@ -96,15 +100,15 @@
 
     <div class="stage" id="mainStage">
         <div class="flap" id="envFlap"><div class="leather-texture"></div></div>
-        
-        <img src="card.jpg" id="card">
-        
+        <img src="card.jpg" id="card" alt="card">
         <div class="env-body" id="envBody">
             <div class="leather-texture"></div>
             <div class="brand">INNERHOWS</div>
             <div class="from">From Razel</div>
         </div>
     </div>
+
+    <div class="hint" id="hint">點開信封後，往上滑出卡片</div>
 
     <script>
         const stage = document.getElementById('mainStage');
@@ -113,24 +117,75 @@
         const body = document.getElementById('mainBody');
         const flap = document.getElementById('envFlap');
         const env = document.getElementById('envBody');
-        let step = 0; 
+        const hint = document.getElementById('hint');
 
-        const handleNext = (e) => {
+        let step = 0; // 0=closed, 1=open, 2=pulled, 3=max
+        let isDragging = false;
+        let startY = 0;
+        let currentPull = -40; 
+        const minPull = -40;
+        const maxPull = -240;
+        const triggerPull = -170;
+
+        function setCardTranslate(y) {
+            card.style.transform = `translateY(${y}px)`;
+        }
+
+        function handleOpen(e) {
             if (e) e.stopPropagation();
-            if (step === 0) {
-                stage.classList.add('is-open');
-                step = 1;
-            } else if (step === 1) {
-                stage.classList.add('is-pulled');
-                step = 2;
-            }
-        };
+            if (step !== 0) return;
+            stage.classList.add('is-open');
+            step = 1;
+            setCardTranslate(minPull);
+            hint.textContent = '往上滑卡片';
+        }
 
-        flap.onclick = handleNext;
-        env.onclick = handleNext;
+        flap.onclick = handleOpen;
+        env.onclick = handleOpen;
+
+        function getY(e) { return e.touches ? e.touches[0].clientY : e.clientY; }
+
+        function startDrag(e) {
+            if (step !== 1) return;
+            isDragging = true;
+            startY = getY(e);
+            card.classList.add('dragging');
+        }
+
+        function moveDrag(e) {
+            if (!isDragging || step !== 1) return;
+            const delta = getY(e) - startY;
+            let nextY = minPull + delta;
+            if (nextY < maxPull) nextY = maxPull;
+            if (nextY > minPull) nextY = minPull;
+            currentPull = nextY;
+            setCardTranslate(currentPull);
+        }
+
+        function endDrag() {
+            if (!isDragging || step !== 1) return;
+            isDragging = false;
+            card.classList.remove('dragging');
+            if (currentPull <= triggerPull) {
+                step = 2;
+                currentPull = maxPull;
+                setCardTranslate(currentPull);
+                hint.textContent = '點卡片放大';
+            } else {
+                currentPull = minPull;
+                card.style.transition = 'transform 0.4s ease';
+                setCardTranslate(currentPull);
+            }
+        }
+
+        card.addEventListener('touchstart', startDrag);
+        window.addEventListener('touchmove', moveDrag, { passive: false });
+        window.addEventListener('touchend', endDrag);
+        card.addEventListener('mousedown', startDrag);
+        window.addEventListener('mousemove', moveDrag);
+        window.addEventListener('mouseup', endDrag);
 
         card.onclick = function(e) {
-            e.stopPropagation(); 
             if (step === 2) {
                 body.classList.add('max-mode');
                 card.classList.add('is-maximized');
@@ -145,7 +200,6 @@
             card.classList.remove('is-maximized');
             step = 2;
         }
-
         overlay.onclick = closeMax;
     </script>
 </body>
